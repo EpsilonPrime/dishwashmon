@@ -16,18 +16,19 @@ futures = "0.3"
 log = "0.4"
 env_logger = "0.10"
 uuid = { version = "1.3", features = ["v4", "serde"] }
+urlencoding = "2.1"
 
 # Optional database integrations
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"], optional = true }
 mongodb = { version = "2.5", optional = true }
 
 # Optional for web API
-axum = { version = "0.6", optional = true }
+axum = { version = "0.6", features = ["macros"], optional = true }
 tower = { version = "0.4", optional = true }
 tower-http = { version = "0.4", features = ["cors", "trace"], optional = true }
 
 [features]
-default = []
+default = ["web-api"]
 postgres = ["sqlx"]
 mongo = ["mongodb"]
 web-api = ["axum", "tower", "tower-http"]

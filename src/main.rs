@@ -1,20 +1,16 @@
-use dotenv::dotenv;
-use reqwest::{header, Client};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::env;
-use std::error::Error;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+mod auth;
+mod api;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct NestToken {
-    access_token: String,
-    expires_in: u64,
-    token_type: String,
-    refresh_token: String, // Important for long-running operations
-}
+use auth::models::{NestToken, OAuthConfig, UserConfig, UserStore};
+use dotenv::dotenv;
+use log::info;
+use reqwest::{header, Client};
+use serde::Deserialize;
+use std::{collections::HashMap, env, error::Error, sync::Arc};
+use tokio::{
+    sync::Mutex,
+    time::{sleep, Duration},
+};
 
 #[derive(Debug, Deserialize)]
 struct CameraEvent {
@@ -23,42 +19,6 @@ struct CameraEvent {
     timestamp: String,
     device_id: String,
     // Additional fields based on Google Nest API response
-}
-
-#[derive(Debug, Clone)]
-struct UserConfig {
-    user_id: String,
-    device_ids: Vec<String>,
-    token: NestToken,
-    project_id: String,
-}
-
-// Store user configurations and their tokens
-type UserStore = Arc<Mutex<HashMap<String, UserConfig>>>;
-
-async fn refresh_token(
-    client_id: &str,
-    client_secret: &str,
-    refresh_token: &str,
-) -> Result<NestToken, Box<dyn Error + Send + Sync>> {
-    let client = Client::new();
-
-    let params = [
-        ("client_id", client_id),
-        ("client_secret", client_secret),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-    ];
-
-    let res = client
-        .post("https://www.googleapis.com/oauth2/v4/token")
-        .form(&params)
-        .send()
-        .await?
-        .json::<NestToken>()
-        .await?;
-
-    Ok(res)
 }
 
 async fn poll_camera_events(
@@ -87,7 +47,7 @@ async fn poll_camera_events(
                 }
             }
             Err(e) => {
-                eprintln!("Error polling device {}: {}", device_id, e);
+                log::error!("Error polling device {}: {}", device_id, e);
             }
         }
     }
@@ -98,43 +58,58 @@ async fn poll_camera_events(
 async fn process_event(event: &CameraEvent, user_id: &str) {
     match event.event_type.as_str() {
         "motion" => {
-            println!(
+            info!(
                 "Motion detected on camera {} for user {} at {}",
                 event.device_id, user_id, event.timestamp
             );
             // Your custom logic here - could be different per user
         }
         "person" => {
-            println!(
+            info!(
                 "Person detected on camera {} for user {} at {}",
                 event.device_id, user_id, event.timestamp
             );
             // Your custom logic here
         }
         // Add other event types
-        _ => println!("Unhandled event type: {}", event.event_type),
+        _ => info!("Unhandled event type: {}", event.event_type),
     }
 }
 
 async fn monitor_user_cameras(
     user_config: UserConfig,
     users: UserStore,
-    client_id: String,
-    client_secret: String,
+    oauth_config: OAuthConfig, 
 ) {
     let user_id = user_config.user_id.clone();
 
     loop {
-        // Check if token needs refresh
-        // In a real app, you'd check expiration time
-
-        // Poll for events
+        // Get current user config
         let current_config = {
             let users_lock = users.lock().await;
             users_lock.get(&user_id).cloned()
         };
 
-        if let Some(config) = current_config {
+        if let Some(mut config) = current_config {
+            // Check if token needs refresh
+            if config.token.is_expired() {
+                log::info!("Token expired for user {}, refreshing", user_id);
+                match auth::oauth::refresh_token(&oauth_config, &config.token.refresh_token).await {
+                    Ok(new_token) => {
+                        let mut users_lock = users.lock().await;
+                        if let Some(user_config) = users_lock.get_mut(&user_id) {
+                            user_config.token = new_token;
+                            log::info!("Refreshed token for user {}", user_id);
+                            config = user_config.clone();
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to refresh token for user {}: {}", user_id, e);
+                    }
+                }
+            }
+
+            // Poll for events
             match poll_camera_events(&config).await {
                 Ok(events) => {
                     for event in events {
@@ -142,22 +117,20 @@ async fn monitor_user_cameras(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error polling events for user {}: {}", user_id, e);
+                    log::error!("Error polling events for user {}: {}", user_id, e);
 
                     // If unauthorized, try refreshing token
                     if e.to_string().contains("401") {
-                        match refresh_token(&client_id, &client_secret, &config.token.refresh_token)
-                            .await
-                        {
+                        match auth::oauth::refresh_token(&oauth_config, &config.token.refresh_token).await {
                             Ok(new_token) => {
                                 let mut users_lock = users.lock().await;
                                 if let Some(user_config) = users_lock.get_mut(&user_id) {
                                     user_config.token = new_token;
-                                    println!("Refreshed token for user {}", user_id);
+                                    log::info!("Refreshed token for user {}", user_id);
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Failed to refresh token for user {}: {}", user_id, e);
+                                log::error!("Failed to refresh token for user {}: {}", user_id, e);
                             }
                         }
                     }
@@ -165,6 +138,7 @@ async fn monitor_user_cameras(
             }
         } else {
             // User was removed while we were running
+            log::info!("User {} was removed, stopping monitoring", user_id);
             break;
         }
 
@@ -172,7 +146,7 @@ async fn monitor_user_cameras(
     }
 }
 
-async fn add_user(
+pub async fn add_user(
     users: &UserStore,
     user_id: String,
     token: NestToken,
@@ -180,65 +154,139 @@ async fn add_user(
     project_id: String,
 ) {
     let mut users_lock = users.lock().await;
-    users_lock.insert(
-        user_id.clone(),
-        UserConfig {
-            user_id,
-            device_ids,
-            token,
-            project_id,
-        },
+    
+    let user_config = UserConfig {
+        user_id: user_id.clone(),
+        device_ids,
+        token,
+        project_id,
+    };
+    
+    users_lock.insert(user_id, user_config);
+}
+
+fn setup_logging() {
+    env_logger::init_from_env(
+        env_logger::Env::default().default_filter_or("info")
     );
+}
+
+#[cfg(feature = "web-api")]
+async fn start_web_server(
+    users: UserStore,
+    oauth_config: OAuthConfig,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use axum::Router;
+    use tower_http::cors::{Any, CorsLayer};
+    use tower_http::trace::TraceLayer;
+    
+    // Create app state for the web server
+    let app_state = api::handlers::auth_handlers::AppState {
+        users: Arc::clone(&users),
+        oauth_config,
+        auth_states: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    };
+    
+    // Start the web server
+    let server_port = env::var("SERVER_PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse()
+        .unwrap_or(3000);
+    
+    // Get routes and add state and middleware
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    
+    let app = api::auth_routes::auth_routes()
+        .with_state(app_state)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http());
+    
+    let addr = SocketAddr::from(([0, 0, 0, 0], server_port));
+    log::info!("Server listening on {}", addr);
+    
+    // Run the server
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await?;
+    
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize .env file and logging
     dotenv().ok();
-
-    let client_id = env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID not set");
-    let client_secret = env::var("GOOGLE_CLIENT_SECRET").expect("GOOGLE_CLIENT_SECRET not set");
-
+    setup_logging();
+    
+    // Create OAuth configuration
+    let oauth_config = OAuthConfig {
+        client_id: env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID not set"),
+        client_secret: env::var("GOOGLE_CLIENT_SECRET").expect("GOOGLE_CLIENT_SECRET not set"),
+        redirect_uri: env::var("REDIRECT_URI").unwrap_or_else(|_| "http://localhost:3000/auth/callback".to_string()),
+        ..Default::default()
+    };
+    
+    log::info!("Starting dishwasher monitor service");
+    
+    // Create user store
     let users: UserStore = Arc::new(Mutex::new(HashMap::new()));
-
-    // In a real app, you'd load these from a database
-    // This is just a simplified example
-
-    // Spawn a task for each user
+    
+    // Handle web API if the feature is enabled
+    #[cfg(feature = "web-api")]
+    {
+        log::info!("Starting web server for authentication");
+        let users_clone = Arc::clone(&users);
+        let oauth_config_clone = oauth_config.clone();
+        
+        tokio::spawn(async move {
+            if let Err(e) = start_web_server(users_clone, oauth_config_clone).await {
+                log::error!("Web server error: {}", e);
+            }
+        });
+    }
+    
+    // In a real app, you'd load existing users from a database
+    // For now we'll just monitor the empty user list
+    
+    // Start monitoring tasks for any existing users
     let mut handles = Vec::new();
-
+    
     {
         let users_lock = users.lock().await;
         for (_, config) in users_lock.iter() {
             let user_config = config.clone();
             let users_clone = Arc::clone(&users);
-            let client_id_clone = client_id.clone();
-            let client_secret_clone = client_secret.clone();
-
+            let oauth_config_clone = oauth_config.clone();
+            
             let handle = tokio::spawn(async move {
                 monitor_user_cameras(
                     user_config,
                     users_clone,
-                    client_id_clone,
-                    client_secret_clone,
+                    oauth_config_clone,
                 )
                 .await;
             });
-
+            
             handles.push(handle);
         }
     }
-
-    // Here you'd implement your API or web interface to register new users
-    // When a new user connects:
-    // 1. Get their OAuth consent
-    // 2. Create a token
-    // 3. Call add_user()
-    // 4. Spawn a new monitoring task
-
+    
+    // Keep the main task running indefinitely
+    log::info!("Monitoring service running. Press Ctrl+C to exit.");
+    
     // Wait for all tasks to complete (they won't in a real app)
+    // In a real app, you'd want to implement a proper shutdown mechanism
     for handle in handles {
         handle.await?;
     }
-
+    
+    // This point will never be reached in a real app
+    // as the program should run continuously
     Ok(())
 }
