@@ -1,6 +1,7 @@
 mod auth;
 mod api;
 mod devices;
+mod storage;
 mod views;
 
 use auth::models::{NestToken, OAuthConfig, UserConfig, UserStore};
@@ -229,18 +230,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dotenv().ok();
     setup_logging();
     
+    // Load environment variables with friendly error messages
+    let client_id = env::var("GOOGLE_CLIENT_ID")
+        .map_err(|_| "GOOGLE_CLIENT_ID environment variable must be set")?;
+        
+    let client_secret = env::var("GOOGLE_CLIENT_SECRET")
+        .map_err(|_| "GOOGLE_CLIENT_SECRET environment variable must be set")?;
+        
+    let _project_id = env::var("GOOGLE_PROJECT_ID")
+        .map_err(|_| "GOOGLE_PROJECT_ID environment variable must be set")?;
+    
+    let host = env::var("HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port = env::var("SERVER_PORT").unwrap_or_else(|_| "3000".to_string());
+    
+    let redirect_uri = env::var("REDIRECT_URI").unwrap_or_else(|_| {
+        if host == "localhost" {
+            format!("http://{}:{}/auth/callback", host, port)
+        } else {
+            format!("https://{}/auth/callback", host)
+        }
+    });
+    
+    log::info!("Using redirect URI: {}", redirect_uri);
+    
     // Create OAuth configuration
     let oauth_config = OAuthConfig {
-        client_id: env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID not set"),
-        client_secret: env::var("GOOGLE_CLIENT_SECRET").expect("GOOGLE_CLIENT_SECRET not set"),
-        redirect_uri: env::var("REDIRECT_URI").unwrap_or_else(|_| "http://localhost:3000/auth/callback".to_string()),
+        client_id,
+        client_secret,
+        redirect_uri,
         ..Default::default()
     };
     
     log::info!("Starting dishwasher monitor service");
     
-    // Create user store
-    let users: UserStore = Arc::new(Mutex::new(HashMap::new()));
+    // Load user store from persistent storage or create a new one
+    let data_file = env::var("DATA_FILE").unwrap_or_else(|_| "data/users.json".to_string());
+    let users = storage::load_user_data(&data_file).await.unwrap_or_else(|e| {
+        log::error!("Failed to load user data: {}", e);
+        Arc::new(Mutex::new(HashMap::new()))
+    });
+    
+    // Start periodic saves
+    let users_for_save = Arc::clone(&users);
+    storage::start_periodic_save(
+        users_for_save,
+        data_file,
+        std::time::Duration::from_secs(60), // Save every minute
+    ).await;
     
     // Handle web API if the feature is enabled
     #[cfg(feature = "web-api")]

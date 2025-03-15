@@ -22,7 +22,7 @@ impl NestToken {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
     pub user_id: String,
     pub device_ids: Vec<String>,

@@ -1,0 +1,24 @@
+# Git files
+.git
+.gitignore
+
+# Build artifacts
+/target
+
+# Environment files
+.env
+.env.*
+
+# Editor files
+.vscode
+.idea
+
+# Docs
+*.md
+!README.md
+
+# Temporary files
+*.swp
+*.swo
+*.tmp
+*~

@@ -1,0 +1,41 @@
+name: dishwashmon
+region: nyc
+services:
+- name: web
+  github:
+    repo: YOUR_GITHUB_REPO
+    branch: main
+  dockerfile_path: Dockerfile
+  http_port: 3000
+  instance_count: 1
+  instance_size_slug: basic-xs
+  routes:
+  - path: /
+  envs:
+  - key: GOOGLE_CLIENT_ID
+    scope: RUN_TIME
+    value: ${GOOGLE_CLIENT_ID}
+    type: SECRET
+  - key: GOOGLE_CLIENT_SECRET
+    scope: RUN_TIME
+    value: ${GOOGLE_CLIENT_SECRET}
+    type: SECRET
+  - key: GOOGLE_PROJECT_ID
+    scope: RUN_TIME
+    value: ${GOOGLE_PROJECT_ID}
+    type: SECRET
+  - key: HOST
+    scope: RUN_TIME
+    value: ${APP_DOMAIN}
+  - key: REDIRECT_URI
+    scope: RUN_TIME
+    value: https://${APP_DOMAIN}/auth/callback
+  - key: SERVER_PORT
+    scope: RUN_TIME
+    value: "3000"
+  - key: RUST_LOG
+    scope: RUN_TIME
+    value: "info"
+  - key: DATA_FILE
+    scope: RUN_TIME
+    value: "/app/data/users.json"

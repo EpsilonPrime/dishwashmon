@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  dishwashmon:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_PROJECT_ID=${GOOGLE_PROJECT_ID}
+      - REDIRECT_URI=${REDIRECT_URI:-http://localhost:3000/auth/callback}
+      - SERVER_PORT=3000
+      - RUST_LOG=info
+    restart: unless-stopped
+    volumes:
+      - dishwashmon-data:/app/data
+    environment:
+      - DATA_FILE=/app/data/users.json
+    networks:
+      - dishwashmon-network
+
+volumes:
+  dishwashmon-data:
+
+networks:
+  dishwashmon-network:
