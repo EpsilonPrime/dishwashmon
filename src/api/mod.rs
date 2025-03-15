@@ -1,6 +1,7 @@
 pub mod auth_routes;
 pub mod device_routes;
 pub mod handlers;
+pub mod web_routes;
 
 #[cfg(feature = "web-api")]
 pub async fn start_server(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

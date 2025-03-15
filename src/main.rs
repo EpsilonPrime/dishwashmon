@@ -1,6 +1,7 @@
 mod auth;
 mod api;
 mod devices;
+mod views;
 
 use auth::models::{NestToken, OAuthConfig, UserConfig, UserStore};
 use dotenv::dotenv;
@@ -206,6 +207,7 @@ async fn start_web_server(
     let app = Router::new()
         .merge(api::auth_routes::auth_routes())
         .merge(api::device_routes::device_routes())
+        .merge(api::web_routes::web_routes())
         .with_state(app_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http());

@@ -136,44 +136,8 @@ pub async fn oauth_callback(
     // 2. Store the tokens more securely
     // 3. Redirect to a device selection page
     
-    // Return success with user ID and link to camera selection
-    Ok(Html(format!(
-        r#"
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Authorization Successful</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 2rem; }}
-                button {{ padding: 0.5rem 1rem; background: #4285f4; color: white; border: none; cursor: pointer; margin-top: 1rem; }}
-                pre {{ background: #f4f4f4; padding: 1rem; border-radius: 4px; overflow-x: auto; }}
-            </style>
-        </head>
-        <body>
-            <h1>Authorization Successful!</h1>
-            <p>Your User ID: <code>{}</code></p>
-            <p>You have been authorized to access your Google Nest devices.</p>
-            
-            <h2>Next Steps:</h2>
-            <p>1. View your available cameras:</p>
-            <pre>GET /devices/{}/cameras</pre>
-            
-            <p>2. Select cameras to monitor:</p>
-            <p>Make a POST request to <code>/auth/register</code> with:</p>
-            <pre>{{
-  "user_id": "{}",
-  "project_id": "{}",
-  "device_ids": ["camera-id-1", "camera-id-2"]
-}}</pre>
-            
-            <p>Use the API to manage your devices and monitoring settings.</p>
-            
-            <a href="/docs" target="_blank"><button>View API Documentation</button></a>
-        </body>
-        </html>
-        "#,
-        user_id, user_id, user_id, project_id
-    )))
+    // Return success page with link to camera selection
+    Ok(Html(crate::views::auth_success_page(&user_id)))
 }
 
 #[derive(Debug, Deserialize)]
