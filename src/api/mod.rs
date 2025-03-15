@@ -1,4 +1,5 @@
 pub mod auth_routes;
+pub mod device_routes;
 pub mod handlers;
 
 #[cfg(feature = "web-api")]

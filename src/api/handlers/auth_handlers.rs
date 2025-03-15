@@ -103,7 +103,7 @@ pub async fn oauth_callback(
     };
     
     // Exchange code for token
-    let _token = exchange_code_for_token(&app_state.oauth_config, &code)
+    let token = exchange_code_for_token(&app_state.oauth_config, &code)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Token exchange error: {}", e)))?;
     
@@ -113,13 +113,30 @@ pub async fn oauth_callback(
         states.remove(&user_id);
     }
     
-    // In a real app, you'd now:
-    // 1. Create a session for the user
-    // 2. Store the tokens securely
-    // 3. Redirect to the main app
+    // Store the user's token temporarily (in a real app, you'd use a database)
+    let project_id = std::env::var("GOOGLE_PROJECT_ID")
+        .unwrap_or_else(|_| "YOUR_PROJECT_ID".to_string());
     
-    // For now, we'll just return success with the user ID
-    // In a real app, you would redirect to a welcome page
+    // Initialize user but without camera selection
+    {
+        let mut users_lock = app_state.users.lock().await;
+        users_lock.insert(
+            user_id.clone(),
+            crate::auth::models::UserConfig {
+                user_id: user_id.clone(),
+                device_ids: Vec::new(), // No devices selected yet
+                token,
+                project_id: project_id.clone(),
+            },
+        );
+    }
+    
+    // In a real app, you'd now:
+    // 1. Create a proper session for the user
+    // 2. Store the tokens more securely
+    // 3. Redirect to a device selection page
+    
+    // Return success with user ID and link to camera selection
     Ok(Html(format!(
         r#"
         <!DOCTYPE html>
@@ -128,16 +145,34 @@ pub async fn oauth_callback(
             <title>Authorization Successful</title>
             <style>
                 body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 2rem; }}
+                button {{ padding: 0.5rem 1rem; background: #4285f4; color: white; border: none; cursor: pointer; margin-top: 1rem; }}
+                pre {{ background: #f4f4f4; padding: 1rem; border-radius: 4px; overflow-x: auto; }}
             </style>
         </head>
         <body>
             <h1>Authorization Successful!</h1>
-            <p>Your User ID: {}</p>
-            <p>You can now use this ID to configure your dishwasher monitoring.</p>
+            <p>Your User ID: <code>{}</code></p>
+            <p>You have been authorized to access your Google Nest devices.</p>
+            
+            <h2>Next Steps:</h2>
+            <p>1. View your available cameras:</p>
+            <pre>GET /devices/{}/cameras</pre>
+            
+            <p>2. Select cameras to monitor:</p>
+            <p>Make a POST request to <code>/auth/register</code> with:</p>
+            <pre>{{
+  "user_id": "{}",
+  "project_id": "{}",
+  "device_ids": ["camera-id-1", "camera-id-2"]
+}}</pre>
+            
+            <p>Use the API to manage your devices and monitoring settings.</p>
+            
+            <a href="/docs" target="_blank"><button>View API Documentation</button></a>
         </body>
         </html>
         "#,
-        user_id
+        user_id, user_id, user_id, project_id
     )))
 }
 
@@ -150,18 +185,56 @@ pub struct RegisterUserRequest {
 
 // Register a user with their devices
 pub async fn register_user(
-    State(_app_state): State<AppState>,
+    State(app_state): State<AppState>,
     Json(request): Json<RegisterUserRequest>,
 ) -> Result<Json<String>, (StatusCode, String)> {
-    let _user_id = request.user_id;
-    let _project_id = request.project_id;
-    let _device_ids = request.device_ids;
+    let user_id = request.user_id;
+    let project_id = request.project_id;
+    let device_ids = request.device_ids;
+    let device_count = device_ids.len(); // Store count before we move device_ids
     
-    // In a real app, you'd verify the user exists and has valid tokens
-    // For this example, we'll just return an error since we don't have actual token storage
+    // Get existing user config
+    let user_config = {
+        let users_lock = app_state.users.lock().await;
+        users_lock.get(&user_id).cloned()
+    };
     
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        "User registration not fully implemented - this would add the user to the monitoring system".to_string(),
-    ))
+    // If user doesn't exist or token is missing, return error
+    if user_config.is_none() {
+        return Err((StatusCode::NOT_FOUND, "User not found. Please authenticate first.".to_string()));
+    }
+    
+    // Update user config with selected devices
+    {
+        let mut users_lock = app_state.users.lock().await;
+        if let Some(config) = users_lock.get_mut(&user_id) {
+            config.device_ids = device_ids.clone();
+            config.project_id = project_id.clone();
+        }
+    }
+    
+    // Start a monitoring task for this user
+    let token_clone = user_config.as_ref().unwrap().token.clone();
+    let oauth_config_clone = app_state.oauth_config.clone();
+    let users_clone = Arc::clone(&app_state.users);
+    
+    // Create user config to pass to monitoring task
+    let monitoring_config = crate::auth::models::UserConfig {
+        user_id: user_id.clone(),
+        device_ids,
+        token: token_clone,
+        project_id,
+    };
+    
+    // Spawn monitoring task
+    tokio::spawn(async move {
+        crate::monitor_user_cameras(
+            monitoring_config,
+            users_clone,
+            oauth_config_clone,
+        )
+        .await;
+    });
+    
+    Ok(Json(format!("User {} registered with {} devices. Monitoring started.", user_id, device_count)))
 }
